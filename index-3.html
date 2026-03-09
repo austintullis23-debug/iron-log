@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Iron Log" />
+  <meta name="theme-color" content="#0a1628" />
+  <title>Iron Log</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; padding: 0; background: #0a1628; overscroll-behavior: none; -webkit-text-size-adjust: 100%; }
+    body { font-family: 'Bebas Neue', Impact, sans-serif; color: #f0f4ff; }
+    input, select, textarea { font-size: 16px !important; -webkit-appearance: none; appearance: none; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: #c9a84c !important; box-shadow: 0 0 8px rgba(201,168,76,0.25); }
+    button:active { opacity: 0.72; transform: scale(0.96); }
+    textarea { resize: none; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: #c9a84c; border-radius: 2px; }
+    select option { background: #0d1f3c; color: #f0f4ff; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+// ── Data ────────────────────────────────────────────────────────────────────
+const BODY_PARTS = ["Chest","Back","Shoulders","Biceps","Triceps","Legs","Core","Full Body"];
+const EXERCISES = {
+  Chest:      ["Bench Press","Incline Bench Press","Decline Bench Press","Dumbbell Fly","Push Up","Cable Fly","Dips"],
+  Back:       ["Deadlift","Pull Up","Barbell Row","Lat Pulldown","Seated Cable Row","T-Bar Row","Face Pull"],
+  Shoulders:  ["Overhead Press","Lateral Raise","Front Raise","Arnold Press","Rear Delt Fly","Shrugs"],
+  Biceps:     ["Barbell Curl","Dumbbell Curl","Hammer Curl","Preacher Curl","Cable Curl","Concentration Curl"],
+  Triceps:    ["Tricep Pushdown","Skull Crusher","Close Grip Bench","Overhead Extension","Dips","Kickback"],
+  Legs:       ["Squat","Romanian Deadlift","Leg Press","Lunges","Leg Curl","Leg Extension","Calf Raise","Hip Thrust"],
+  Core:       ["Plank","Crunches","Russian Twist","Leg Raise","Ab Wheel","Cable Crunch","Dead Bug"],
+  "Full Body":["Clean and Jerk","Snatch","Thruster","Burpee","Kettlebell Swing","Man Maker"],
+};
+const BP_COLORS = {
+  Chest:"#e8b4b8", Back:"#7fb3d3", Shoulders:"#b8a0d4",
+  Biceps:"#e8a0b8", Triceps:"#d4a0b8", Legs:"#e8d48a",
+  Core:"#8ad4b8", "Full Body":"#a0c4e8"
+};
+
+// ── Storage (IndexedDB) ──────────────────────────────────────────────────────
+function openDB() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open("IronLogDB", 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore("kv");
+    req.onsuccess = e => res(e.target.result);
+    req.onerror = () => rej(req.error);
+  });
+}
+async function dbGet(key) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction("kv", "readonly");
+    const req = tx.objectStore("kv").get(key);
+    req.onsuccess = () => res(req.result);
+    req.onerror = () => rej(req.error);
+  });
+}
+async function dbSet(key, value) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction("kv", "readwrite");
+    tx.objectStore("kv").put(value, key);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+const uid = () => Date.now() + Math.random();
+const newWorkout = () => ({ id: uid(), date: new Date().toISOString().split("T")[0], name: "", bodyWeight: "", exercises: [] });
+const newExercise = (bp = "Chest") => ({ id: uid(), bodyPart: bp, name: EXERCISES[bp][0], customName: "", sets: [] });
+const newSet = () => ({ id: uid(), weight: "", reps: "", comment: "" });
+const newTemplate = () => ({ id: uid(), name: "New Template", exercises: [] });
+
+function getPRBadge(ex, setIdx, allWorkouts, curId) {
+  const s = ex.sets[setIdx];
+  if (!s.weight || !s.reps) return null;
+  const vol = parseFloat(s.weight) * parseInt(s.reps);
+  let best = 0;
+  for (const w of allWorkouts) {
+    if (w.id === curId) continue;
+    for (const e of w.exercises) {
+      if (e.name === ex.name || (ex.customName && e.customName === ex.customName)) {
+        for (const t of e.sets) {
+          if (t.weight && t.reps) best = Math.max(best, parseFloat(t.weight) * parseInt(t.reps));
+        }
+      }
+    }
+  }
+  if (best === 0) return null;
+  if (vol > best) return "PR";
+  if ((vol - best) / best >= -0.05) return "~";
+  return null;
+}
+
+function getProgressData(name, workouts) {
+  const pts = [];
+  for (const w of [...workouts].sort((a,b) => new Date(a.date)-new Date(b.date))) {
+    for (const ex of w.exercises) {
+      if ((ex.customName || ex.name) === name) {
+        let vol = 0, wt = 0;
+        for (const s of ex.sets) {
+          if (s.weight && s.reps) {
+            vol = Math.max(vol, parseFloat(s.weight)*parseInt(s.reps));
+            wt  = Math.max(wt, parseFloat(s.weight));
+          }
+        }
+        if (vol > 0) pts.push({ date: w.date, volume: vol, weight: wt, name: w.name });
+      }
+    }
+  }
+  return pts;
+}
+
+// ── SVG Components ───────────────────────────────────────────────────────────
+function BarbellSVG({ size = 40 }) {
+  const gold="#c9a84c", gd="#a07830", gl="#e8c87a";
+  const W=size*2.2, H=size, cy=H/2;
+  const shY=cy-size*0.055, shH=size*0.11;
+  const cW=size*0.09, cH=size*0.42, cY=cy-cH/2;
+  const lcX=size*0.32, rcX=W-lcX-cW;
+  const p1W=size*0.11, p1H=size*0.78, p2W=size*0.09, p2H=size*0.62;
+  const lp1=lcX-p1W, lp2=lp1-p2W, rp1=rcX+cW, rp2=rp1+p1W;
+  const capW=size*0.055, capH=size*0.28;
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{display:"block"}}>
+      <defs>
+        <linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#d4d4e0"/><stop offset="40%" stopColor="#f0f4ff"/><stop offset="100%" stopColor="#8890a8"/>
+        </linearGradient>
+        <linearGradient id="pg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={gl}/><stop offset="50%" stopColor={gold}/><stop offset="100%" stopColor={gd}/>
+        </linearGradient>
+        <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={gl}/><stop offset="100%" stopColor={gd}/>
+        </linearGradient>
+      </defs>
+      <rect x={lp2} y={shY} width={W-lp2*2+size*0.01} height={shH} rx={shH/2} fill="url(#sg)"/>
+      <rect x={lp2} y={cy-p2H/2} width={p2W} height={p2H} rx={size*0.018} fill="url(#pg)"/>
+      <rect x={lp1} y={cy-p1H/2} width={p1W} height={p1H} rx={size*0.022} fill="url(#pg)"/>
+      <rect x={rp1} y={cy-p1H/2} width={p1W} height={p1H} rx={size*0.022} fill="url(#pg)"/>
+      <rect x={rp2} y={cy-p2H/2} width={p2W} height={p2H} rx={size*0.018} fill="url(#pg)"/>
+      <rect x={lcX} y={cY} width={cW} height={cH} rx={size*0.018} fill="url(#cg)"/>
+      <rect x={rcX} y={cY} width={cW} height={cH} rx={size*0.018} fill="url(#cg)"/>
+      <rect x={lp2-capW} y={cy-capH/2} width={capW} height={capH} rx={size*0.014} fill={gd}/>
+      <rect x={rp2+p2W} y={cy-capH/2} width={capW} height={capH} rx={size*0.014} fill={gd}/>
+      {[0.44,0.46,0.48,0.50,0.52,0.54,0.56].map((p,i)=>(
+        <line key={i} x1={W*p} y1={shY+1} x2={W*p} y2={shY+shH-1} stroke="#9098b0" strokeWidth={size*0.012} opacity="0.5"/>
+      ))}
+    </svg>
+  );
+}
+
+function LogoLockup() {
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+      <BarbellSVG size={32}/>
+      <div style={{display:"flex",flexDirection:"column",lineHeight:1}}>
+        <span style={{fontSize:"20px",color:"#c9a84c",letterSpacing:"0.18em",textShadow:"0 0 14px rgba(201,168,76,0.4)"}}>IRON</span>
+        <span style={{fontSize:"11px",color:"#f0f4ff",letterSpacing:"0.35em",marginTop:"1px"}}>LOG</span>
+      </div>
+    </div>
+  );
+}
+
+function MiniChart({ data }) {
+  if (data.length < 2) return null;
+  const W=200, H=56, pad=8;
+  const vols=data.map(d=>d.volume);
+  const mn=Math.min(...vols), mx=Math.max(...vols), rng=mx-mn||1;
+  const pts=data.map((d,i)=>{
+    const x=pad+(i/(data.length-1))*(W-pad*2);
+    const y=H-pad-((d.volume-mn)/rng)*(H-pad*2);
+    return `${x},${y}`;
+  });
+  const up=vols[vols.length-1]>vols[0];
+  return (
+    <svg width={W} height={H} style={{overflow:"visible",display:"block"}}>
+      <polyline points={pts.join(" ")} fill="none" stroke={up?"#c9a84c":"#e05555"} strokeWidth="2" strokeLinejoin="round"/>
+      {data.map((d,i)=>{const[x,y]=pts[i].split(",").map(Number);return <circle key={i} cx={x} cy={y} r="3" fill={up?"#c9a84c":"#e05555"}/>;})}
+    </svg>
+  );
+}
+
+// ── Bottom Nav ───────────────────────────────────────────────────────────────
+function BottomNav({ view, onNav }) {
+  const tabs=[
+    {id:"home",   icon:"🏠", label:"HOME"},
+    {id:"log",    icon:"➕", label:"LOG"},
+    {id:"history",icon:"📋", label:"HISTORY"},
+    {id:"progress",icon:"📈",label:"PROGRESS"},
+    {id:"orm",    icon:"🏆", label:"1RM"},
+    {id:"templates",icon:"⚡",label:"TEMPLATES"},
+  ];
+  return (
+    <nav style={{position:"fixed",bottom:0,left:0,right:0,
+      background:"linear-gradient(180deg,#071020 0%,#0a1628 100%)",
+      borderTop:"1px solid #c9a84c",display:"flex",zIndex:200,
+      paddingBottom:"env(safe-area-inset-bottom,0px)",
+      boxShadow:"0 -4px 20px rgba(0,0,0,0.5)"}}>
+      {tabs.map(t=>(
+        <button key={t.id} onClick={()=>onNav(t.id)} style={{
+          flex:1,display:"flex",flexDirection:"column",alignItems:"center",
+          justifyContent:"center",padding:"10px 2px 8px",
+          background:"transparent",border:"none",
+          color:view===t.id?"#c9a84c":"#6b82a8",
+          cursor:"pointer",fontFamily:"'Bebas Neue',Impact,sans-serif",
+          fontSize:"9px",letterSpacing:"0.08em",gap:"3px",
+          WebkitTapHighlightColor:"transparent",transition:"color 0.15s"}}>
+          <span style={{fontSize:"18px",lineHeight:1}}>{t.icon}</span>
+          <span>{t.label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+// ── Shared header ────────────────────────────────────────────────────────────
+function Header({ right }) {
+  return (
+    <div style={{
+      background:"linear-gradient(135deg,#071020 0%,#0d1f3c 100%)",
+      borderBottom:"2px solid #c9a84c",
+      padding:"12px 16px",
+      paddingTop:"max(12px, env(safe-area-inset-top))",
+      display:"flex",alignItems:"center",justifyContent:"space-between",
+      position:"sticky",top:0,zIndex:100,
+      boxShadow:"0 4px 20px rgba(201,168,76,0.12)"}}>
+      <LogoLockup/>
+      {right && <div style={{display:"flex",gap:"8px"}}>{right}</div>}
+    </div>
+  );
+}
+
+// ── Shared styles ────────────────────────────────────────────────────────────
+const S = {
+  app:  { minHeight:"100vh", background:"#0a1628", color:"#f0f4ff",
+          fontFamily:"'Bebas Neue','Impact',sans-serif", letterSpacing:"0.03em", paddingBottom:"90px" },
+  main: { padding:"16px", maxWidth:"600px", margin:"0 auto" },
+  card: { background:"linear-gradient(135deg,#0f1e38 0%,#0d1f3c 100%)",
+          border:"1px solid #1e3560", borderRadius:"12px", padding:"16px", marginBottom:"12px" },
+  sectionTitle: { fontSize:"20px", color:"#c9a84c", letterSpacing:"0.2em", marginBottom:"14px",
+                  textShadow:"0 0 10px rgba(201,168,76,0.3)" },
+  bigBtn: { background:"linear-gradient(135deg,#c9a84c,#b8922a)", color:"#0a1628", border:"none",
+            padding:"18px 24px", fontSize:"18px", fontFamily:"inherit", letterSpacing:"0.15em",
+            cursor:"pointer", display:"block", width:"100%",
+            boxShadow:"0 4px 20px rgba(201,168,76,0.3)", borderRadius:"10px",
+            WebkitTapHighlightColor:"transparent" },
+  outlineBtn: (col="#c9a84c") => ({ background:"transparent", border:`1px solid ${col}`, color:col,
+            padding:"8px 14px", cursor:"pointer", fontFamily:"inherit", fontSize:"12px",
+            letterSpacing:"0.08em", borderRadius:"6px", WebkitTapHighlightColor:"transparent", minHeight:"38px" }),
+  input: { background:"#0d1f3c", border:"1px solid #1e3560", color:"#f0f4ff",
+           padding:"12px 14px", fontFamily:"inherit", fontSize:"16px",
+           width:"100%", borderRadius:"8px", WebkitAppearance:"none" },
+  select: { background:"#0d1f3c", border:"1px solid #1e3560", color:"#f0f4ff",
+            padding:"12px 14px", fontFamily:"inherit", fontSize:"16px",
+            width:"100%", borderRadius:"8px", WebkitAppearance:"none", cursor:"pointer" },
+  label: { fontSize:"11px", color:"#6b82a8", marginBottom:"4px", letterSpacing:"0.1em", display:"block" },
+  bpTag: (bp) => ({ background:BP_COLORS[bp]||"#555", color:"#0a1628",
+                    fontSize:"10px", padding:"2px 7px", letterSpacing:"0.1em",
+                    display:"inline-block", borderRadius:"3px" }),
+  setRow: { display:"grid", gridTemplateColumns:"28px 72px 72px 1fr auto",
+            gap:"6px", alignItems:"center", marginBottom:"8px" },
+  prBadge: (t) => ({ background:t==="PR"?"#c9a84c":"#ffffff", color:"#0a1628",
+                     fontSize:"9px", padding:"1px 4px", borderRadius:"2px", fontWeight:"bold" }),
+};
+
+// ── Exercise card (shared between log and template editor) ───────────────────
+function ExerciseCard({ ex, expanded, onToggle, onUpdate, onRemove,
+                        sets, onAddSet, onUpdateSet, onRemoveSet,
+                        workouts, workoutId, isTemplate=false }) {
+  return (
+    <div style={S.card}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",padding:"2px 0"}}
+           onClick={onToggle}>
+        <div style={{display:"flex",alignItems:"center",gap:"8px",flex:1,minWidth:0}}>
+          <span style={S.bpTag(ex.bodyPart)}>{ex.bodyPart}</span>
+          <span style={{fontSize:"16px",letterSpacing:"0.08em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+            {ex.customName||ex.name}
+          </span>
+        </div>
+        <div style={{display:"flex",gap:"6px",alignItems:"center",flexShrink:0}}>
+          <span style={{color:"#6b82a8",fontSize:"11px"}}>{sets.length} SETS</span>
+          <button style={S.outlineBtn("#e05555")}
+                  onClick={e=>{e.stopPropagation();onRemove();}}>✕</button>
+        </div>
+      </div>
+      {expanded && (
+        <div style={{marginTop:"14px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"10px"}}>
+            <div><span style={S.label}>BODY PART</span>
+              <select style={S.select} value={ex.bodyPart}
+                      onChange={e=>onUpdate("bodyPart",e.target.value)}>
+                {BODY_PARTS.map(bp=><option key={bp}>{bp}</option>)}
+              </select>
+            </div>
+            <div><span style={S.label}>EXERCISE</span>
+              <select style={S.select} value={ex.name}
+                      onChange={e=>onUpdate("name",e.target.value)}>
+                {EXERCISES[ex.bodyPart].map(n=><option key={n}>{n}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{marginBottom:"10px"}}>
+            <span style={S.label}>CUSTOM NAME (OPTIONAL)</span>
+            <input style={S.input} placeholder="Override name…" value={ex.customName}
+                   onChange={e=>onUpdate("customName",e.target.value)}/>
+          </div>
+          {!isTemplate && (
+            <div style={{display:"grid",gridTemplateColumns:"28px 72px 72px 1fr auto",gap:"6px",marginBottom:"6px"}}>
+              {["SET","LBS","REPS","NOTES",""].map((h,i)=>(
+                <div key={i} style={{fontSize:"10px",color:"#6b82a8",letterSpacing:"0.08em"}}>{h}</div>
+              ))}
+            </div>
+          )}
+          {isTemplate && (
+            <span style={{...S.label,marginBottom:"8px"}}>TARGET SETS (optional — edit when logging)</span>
+          )}
+          {sets.map((s,i)=>{
+            const badge = !isTemplate ? getPRBadge(ex,i,workouts,workoutId) : null;
+            return (
+              <div key={s.id} style={S.setRow}>
+                <div style={{color:"#6b82a8",fontSize:"11px",textAlign:"center"}}>
+                  {badge ? <span style={S.prBadge(badge)}>{badge}</span> : i+1}
+                </div>
+                <input style={S.input} type="number" inputMode="decimal"
+                       placeholder="0" value={s.weight}
+                       onChange={e=>onUpdateSet(s.id,"weight",e.target.value)}/>
+                <input style={S.input} type="number" inputMode="numeric"
+                       placeholder="0" value={s.reps}
+                       onChange={e=>onUpdateSet(s.id,"reps",e.target.value)}/>
+                {!isTemplate
+                  ? <input style={S.input} placeholder="notes…" value={s.comment}
+                           onChange={e=>onUpdateSet(s.id,"comment",e.target.value)}/>
+                  : <div/>}
+                <button style={S.outlineBtn("#e05555")}
+                        onClick={()=>onRemoveSet(s.id)}>✕</button>
+              </div>
+            );
+          })}
+          <button style={{...S.outlineBtn("#c9a84c"),marginTop:"6px"}}
+                  onClick={onAddSet}>+ ADD SET</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Views ────────────────────────────────────────────────────────────────────
+function HomeView({ workouts, templates, onStart, onStartFromTemplate }) {
+  return (
+    <div style={S.main}>
+      <div style={{textAlign:"center",padding:"20px 0 16px",display:"flex",flexDirection:"column",alignItems:"center"}}>
+        <BarbellSVG size={52}/>
+        <div style={{fontSize:"38px",color:"#c9a84c",letterSpacing:"0.2em",
+                     textShadow:"0 0 28px rgba(201,168,76,0.5)",margin:"8px 0 4px"}}>IRON LOG</div>
+        <div style={{color:"#6b82a8",fontSize:"12px",letterSpacing:"0.2em",marginBottom:"18px"}}>
+          TRACK · PROGRESS · DOMINATE
+        </div>
+        <button style={S.bigBtn} onClick={onStart}>+ START BLANK WORKOUT</button>
+        {templates.length > 0 && (
+          <div style={{marginTop:"12px"}}>
+            <div style={{fontSize:"11px",color:"#6b82a8",letterSpacing:"0.15em",marginBottom:"8px"}}>OR FROM A TEMPLATE</div>
+            <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
+              {templates.map(t=>(
+                <button key={t.id}
+                  style={{...S.bigBtn,background:"transparent",border:"1px solid #c9a84c",
+                          color:"#c9a84c",boxShadow:"none",fontSize:"16px",padding:"14px"}}
+                  onClick={()=>onStartFromTemplate(t)}>▶ {t.name}</button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px"}}>
+        {[
+          {label:"WORKOUTS",  value:workouts.length},
+          {label:"EXERCISES", value:workouts.reduce((a,w)=>a+w.exercises.length,0)},
+          {label:"TOTAL SETS",value:workouts.reduce((a,w)=>a+w.exercises.reduce((b,e)=>b+e.sets.length,0),0)},
+        ].map(s=>(
+          <div key={s.label} style={{...S.card,textAlign:"center"}}>
+            <div style={{fontSize:"32px",color:"#c9a84c"}}>{s.value}</div>
+            <div style={{fontSize:"10px",color:"#6b82a8",letterSpacing:"0.12em"}}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+      {workouts.length > 0 && (
+        <div style={S.card}>
+          <div style={S.sectionTitle}>RECENT WORKOUTS</div>
+          {workouts.slice(0,3).map(w=>(
+            <div key={w.id} style={{borderBottom:"1px solid #132038",padding:"10px 0",
+                                    display:"flex",justifyContent:"space-between"}}>
+              <div>
+                <div style={{fontSize:"16px"}}>{w.name}</div>
+                <div style={{fontSize:"11px",color:"#6b82a8"}}>
+                  {w.date}{w.bodyWeight?` · ${w.bodyWeight} lbs`:""} · {w.exercises.length} exercises
+                </div>
+              </div>
+              <div style={{color:"#c9a84c",fontSize:"20px",alignSelf:"center"}}>→</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LogView({ workout, setWorkout, workouts, onSave, onCancel }) {
+  const [expandedEx, setExpandedEx] = useState(null);
+
+  const updEx = (exId, field, value) => setWorkout(p=>({...p,
+    exercises:p.exercises.map(e=>e.id===exId
+      ? (field==="bodyPart" ? {...e,bodyPart:value,name:EXERCISES[value][0]} : {...e,[field]:value})
+      : e)}));
+  const remEx = id => setWorkout(p=>({...p,exercises:p.exercises.filter(e=>e.id!==id)}));
+  const addEx = () => { const e=newExercise(); setWorkout(p=>({...p,exercises:[...p.exercises,e]})); setExpandedEx(e.id); };
+  const addSet = exId => setWorkout(p=>({...p,exercises:p.exercises.map(e=>e.id===exId?{...e,sets:[...e.sets,newSet()]}:e)}));
+  const updSet = (exId,sId,f,v) => setWorkout(p=>({...p,exercises:p.exercises.map(e=>e.id===exId?{...e,sets:e.sets.map(s=>s.id===sId?{...s,[f]:v}:s)}:e)}));
+  const remSet = (exId,sId) => setWorkout(p=>({...p,exercises:p.exercises.map(e=>e.id===exId?{...e,sets:e.sets.filter(s=>s.id!==sId)}:e)}));
+
+  return (
+    <>
+      <Header right={<>
+        <button style={S.outlineBtn("#6b82a8")} onClick={onCancel}>CANCEL</button>
+        <button style={S.outlineBtn("#c9a84c")} onClick={onSave}>SAVE ✓</button>
+      </>}/>
+      <div style={S.main}>
+        <div style={S.card}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"10px"}}>
+            <div><span style={S.label}>WORKOUT NAME</span>
+              <input style={S.input} value={workout.name}
+                     onChange={e=>setWorkout(p=>({...p,name:e.target.value}))}/>
+            </div>
+            <div><span style={S.label}>DATE</span>
+              <input type="date" style={S.input} value={workout.date}
+                     onChange={e=>setWorkout(p=>({...p,date:e.target.value}))}/>
+            </div>
+          </div>
+          <div><span style={S.label}>BODYWEIGHT (LBS)</span>
+            <input type="number" inputMode="decimal" style={S.input}
+                   placeholder="e.g. 185" value={workout.bodyWeight}
+                   onChange={e=>setWorkout(p=>({...p,bodyWeight:e.target.value}))}/>
+          </div>
+        </div>
+        {workout.exercises.map(ex=>(
+          <ExerciseCard key={ex.id} ex={ex}
+            expanded={expandedEx===ex.id}
+            onToggle={()=>setExpandedEx(expandedEx===ex.id?null:ex.id)}
+            onUpdate={(f,v)=>updEx(ex.id,f,v)}
+            onRemove={()=>remEx(ex.id)}
+            sets={ex.sets} onAddSet={()=>addSet(ex.id)}
+            onUpdateSet={(sId,f,v)=>updSet(ex.id,sId,f,v)}
+            onRemoveSet={sId=>remSet(ex.id,sId)}
+            workouts={workouts} workoutId={workout.id}/>
+        ))}
+        <button style={{...S.bigBtn,background:"transparent",border:"2px solid #c9a84c",
+                        color:"#c9a84c",boxShadow:"none",marginBottom:"10px"}}
+                onClick={addEx}>+ ADD EXERCISE</button>
+        <button style={S.bigBtn} onClick={onSave}>SAVE WORKOUT</button>
+      </div>
+    </>
+  );
+}
+
+function HistoryView({ workouts, onDelete }) {
+  return (
+    <div style={S.main}>
+      <div style={S.sectionTitle}>WORKOUT HISTORY</div>
+      {workouts.length===0 && (
+        <div style={{...S.card,textAlign:"center",padding:"40px",color:"#6b82a8"}}>
+          No workouts yet. Tap ➕ to log your first!
+        </div>
+      )}
+      {workouts.map(w=>(
+        <div key={w.id} style={S.card}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:"10px"}}>
+            <div>
+              <div style={{fontSize:"18px"}}>{w.name}</div>
+              <div style={{fontSize:"11px",color:"#6b82a8"}}>
+                {w.date}{w.bodyWeight?` · ${w.bodyWeight} lbs`:""} · {w.exercises.length} exercises
+              </div>
+            </div>
+            <button style={S.outlineBtn("#e05555")} onClick={()=>onDelete(w.id)}>DELETE</button>
+          </div>
+          {w.exercises.map(ex=>(
+            <div key={ex.id} style={{borderTop:"1px solid #132038",paddingTop:"8px",marginTop:"6px"}}>
+              <div style={{display:"flex",gap:"8px",alignItems:"center",marginBottom:"6px"}}>
+                <span style={S.bpTag(ex.bodyPart)}>{ex.bodyPart}</span>
+                <span style={{fontSize:"14px"}}>{ex.customName||ex.name}</span>
+              </div>
+              {ex.sets.map((s,i)=>(
+                <div key={s.id} style={{display:"flex",gap:"12px",fontSize:"13px",
+                                        color:"#c8d4e8",marginBottom:"3px",paddingLeft:"8px"}}>
+                  <span style={{color:"#6b82a8",minWidth:"38px"}}>SET {i+1}</span>
+                  <span>{s.weight} lbs</span><span>×</span><span>{s.reps} reps</span>
+                  {s.comment&&<span style={{color:"#5566aa",fontStyle:"italic",
+                                           fontFamily:"Georgia,serif",fontSize:"11px"}}>"{s.comment}"</span>}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProgressView({ workouts }) {
+  const [sel, setSel] = useState("");
+  const allNames = [...new Set(workouts.flatMap(w=>w.exercises.map(e=>e.customName||e.name)))];
+  const pData = sel ? getProgressData(sel, workouts) : [];
+
+  return (
+    <div style={S.main}>
+      <div style={S.sectionTitle}>PROGRESS</div>
+      <div style={S.card}>
+        <span style={S.label}>SELECT EXERCISE</span>
+        <select style={S.select} value={sel} onChange={e=>setSel(e.target.value)}>
+          <option value="">-- Choose --</option>
+          {allNames.map(n=><option key={n}>{n}</option>)}
+        </select>
+      </div>
+
+      {sel && pData.length===0 && (
+        <div style={{color:"#6b82a8",textAlign:"center",padding:"20px"}}>No data yet for this exercise.</div>
+      )}
+
+      {pData.length>0 && (
+        <>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px"}}>
+            <div style={{...S.card,textAlign:"center"}}>
+              <span style={S.label}>BEST WEIGHT</span>
+              <div style={{fontSize:"30px",color:"#c9a84c"}}>{Math.max(...pData.map(d=>d.weight))} <span style={{fontSize:"12px"}}>LBS</span></div>
+            </div>
+            <div style={{...S.card,textAlign:"center"}}>
+              <span style={S.label}>BEST VOLUME</span>
+              <div style={{fontSize:"30px",color:"#c9a84c"}}>{Math.max(...pData.map(d=>d.volume))} <span style={{fontSize:"12px"}}>LBS</span></div>
+            </div>
+          </div>
+          <div style={S.card}>
+            <span style={{...S.label,marginBottom:"12px"}}>VOLUME OVER TIME</span>
+            <MiniChart data={pData}/>
+            <div style={{marginTop:"12px"}}>
+              {pData.map((d,i)=>{
+                const prev=pData[i-1];
+                const chg=prev?((d.volume-prev.volume)/prev.volume*100).toFixed(1):null;
+                return (
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",
+                                       padding:"7px 0",borderBottom:"1px solid #132038",fontSize:"12px"}}>
+                    <span style={{color:"#6b82a8"}}>{d.date}</span>
+                    <span>{d.weight} lbs</span>
+                    <span style={{color:"#c8d4e8"}}>{d.volume} vol</span>
+                    {chg!==null&&<span style={{color:parseFloat(chg)>0?"#c9a84c":"#e05555"}}>
+                      {parseFloat(chg)>0?"▲":"▼"} {Math.abs(chg)}%
+                    </span>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div style={S.card}>
+            <span style={S.label}>STRENGTH TREND</span>
+            {(()=>{
+              const first=pData[0]?.volume, last=pData[pData.length-1]?.volume;
+              const pct=first?((last-first)/first*100).toFixed(1):0;
+              const up=pct>0;
+              return (
+                <div style={{display:"flex",alignItems:"center",gap:"14px",marginTop:"6px"}}>
+                  <div style={{fontSize:"40px"}}>{up?"📈":"📉"}</div>
+                  <div>
+                    <div style={{fontSize:"22px",color:up?"#c9a84c":"#e05555"}}>
+                      {up?"+":""}{pct}% VOLUME CHANGE
+                    </div>
+                    <div style={{fontSize:"11px",color:"#6b82a8"}}>
+                      {up?"You are getting STRONGER!":"Focus on progressive overload."}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </>
+      )}
+
+      {/* Bodyweight trend */}
+      {(()=>{
+        const bw=[...workouts].filter(w=>w.bodyWeight)
+          .sort((a,b)=>new Date(a.date)-new Date(b.date))
+          .map(w=>({date:w.date,volume:parseFloat(w.bodyWeight),weight:parseFloat(w.bodyWeight)}));
+        if (bw.length<1) return null;
+        const first=bw[0].weight, last=bw[bw.length-1].weight;
+        const diff=(last-first).toFixed(1);
+        return (
+          <div style={S.card}>
+            <div style={S.sectionTitle}>BODYWEIGHT</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"12px"}}>
+              {[{l:"CURRENT",v:last},{l:"STARTING",v:first},{l:"CHANGE",v:(diff>0?"+":"")+diff}].map(s=>(
+                <div key={s.l} style={{textAlign:"center"}}>
+                  <span style={S.label}>{s.l}</span>
+                  <div style={{fontSize:"22px",color:"#c9a84c"}}>{s.v} <span style={{fontSize:"11px"}}>LBS</span></div>
+                </div>
+              ))}
+            </div>
+            {bw.length>1&&<MiniChart data={bw}/>}
+            <div style={{marginTop:"10px"}}>
+              {bw.map((d,i)=>{
+                const prev=bw[i-1];
+                const chg=prev?(d.weight-prev.weight).toFixed(1):null;
+                return (
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",
+                                       padding:"6px 0",borderBottom:"1px solid #132038",fontSize:"12px"}}>
+                    <span style={{color:"#6b82a8"}}>{d.date}</span>
+                    <span>{d.weight} lbs</span>
+                    {chg!==null&&<span style={{color:parseFloat(chg)>0?"#ffffff":parseFloat(chg)<0?"#c9a84c":"#6b82a8"}}>
+                      {parseFloat(chg)>0?"▲ +":parseFloat(chg)<0?"▼ ":"— "}{chg} lbs
+                    </span>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* By body part */}
+      {workouts.length>0&&(
+        <div style={S.card}>
+          <div style={S.sectionTitle}>BY BODY PART</div>
+          {BODY_PARTS.map(bp=>{
+            const exes=[...new Set(workouts.flatMap(w=>w.exercises.filter(e=>e.bodyPart===bp).map(e=>e.customName||e.name)))];
+            if(!exes.length) return null;
+            return (
+              <div key={bp} style={{marginBottom:"14px"}}>
+                <span style={S.bpTag(bp)}>{bp}</span>
+                <div style={{paddingLeft:"4px",marginTop:"6px"}}>
+                  {exes.map(name=>{
+                    const d=getProgressData(name,workouts);
+                    const up=d.length>1?d[d.length-1].volume>d[0].volume:null;
+                    return (
+                      <div key={name} style={{display:"flex",justifyContent:"space-between",
+                                             padding:"6px 0",borderBottom:"1px solid #132038",
+                                             cursor:"pointer",alignItems:"center"}}
+                           onClick={()=>setSel(name)}>
+                        <span style={{fontSize:"13px"}}>{name}</span>
+                        <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+                          {d.length>1&&<MiniChart data={d}/>}
+                          {up!==null&&<span style={{color:up?"#c9a84c":"#e05555"}}>{up?"▲":"▼"}</span>}
+                          <span style={{color:"#6b82a8",fontSize:"10px"}}>{d.length}x</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TemplatesView({ templates, setTemplates, onStartFromTemplate }) {
+  const [editing, setEditing] = useState(null);
+  const [expandedEx, setExpandedEx] = useState(null);
+
+  const saveT = (t) => { setTemplates(p=>p.find(x=>x.id===t.id)?p.map(x=>x.id===t.id?t:x):[t,...p]); setEditing(null); };
+  const deleteT = id => setTemplates(p=>p.filter(t=>t.id!==id));
+  const startNew = () => { const t=newTemplate(); setTemplates(p=>[t,...p]); setEditing(t); };
+
+  const updEx = (t,exId,f,v) => setEditing({...t,exercises:t.exercises.map(e=>e.id===exId
+    ?(f==="bodyPart"?{...e,bodyPart:v,name:EXERCISES[v][0]}:{...e,[f]:v}):e)});
+  const remEx = (t,exId) => setEditing({...t,exercises:t.exercises.filter(e=>e.id!==exId)});
+  const addEx = (t) => { const e=newExercise(); setEditing({...t,exercises:[...t.exercises,e]}); setExpandedEx(e.id); };
+  const addSet = (t,exId) => setEditing({...t,exercises:t.exercises.map(e=>e.id===exId?{...e,sets:[...e.sets,newSet()]}:e)});
+  const updSet = (t,exId,sId,f,v) => setEditing({...t,exercises:t.exercises.map(e=>e.id===exId?{...e,sets:e.sets.map(s=>s.id===sId?{...s,[f]:v}:s)}:e)});
+  const remSet = (t,exId,sId) => setEditing({...t,exercises:t.exercises.map(e=>e.id===exId?{...e,sets:e.sets.filter(s=>s.id!==sId)}:e)});
+
+  if (editing) return (
+    <>
+      <Header right={<>
+        <button style={S.outlineBtn("#6b82a8")} onClick={()=>setEditing(null)}>CANCEL</button>
+        <button style={S.outlineBtn("#c9a84c")} onClick={()=>saveT(editing)}>SAVE ✓</button>
+      </>}/>
+      <div style={S.main}>
+        <div style={S.card}>
+          <span style={S.label}>TEMPLATE NAME</span>
+          <input style={S.input} value={editing.name}
+                 onChange={e=>setEditing({...editing,name:e.target.value})}/>
+        </div>
+        {editing.exercises.map(ex=>(
+          <ExerciseCard key={ex.id} ex={ex} isTemplate
+            expanded={expandedEx===ex.id}
+            onToggle={()=>setExpandedEx(expandedEx===ex.id?null:ex.id)}
+            onUpdate={(f,v)=>updEx(editing,ex.id,f,v)}
+            onRemove={()=>remEx(editing,ex.id)}
+            sets={ex.sets} onAddSet={()=>addSet(editing,ex.id)}
+            onUpdateSet={(sId,f,v)=>updSet(editing,ex.id,sId,f,v)}
+            onRemoveSet={sId=>remSet(editing,ex.id,sId)}/>
+        ))}
+        <button style={{...S.bigBtn,background:"transparent",border:"2px solid #c9a84c",
+                        color:"#c9a84c",boxShadow:"none",marginBottom:"10px"}}
+                onClick={()=>addEx(editing)}>+ ADD EXERCISE</button>
+        <button style={S.bigBtn} onClick={()=>saveT(editing)}>SAVE TEMPLATE</button>
+      </div>
+    </>
+  );
+
+  return (
+    <div style={S.main}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"14px"}}>
+        <div style={S.sectionTitle}>MY TEMPLATES</div>
+        <button style={S.outlineBtn("#c9a84c")} onClick={startNew}>+ NEW</button>
+      </div>
+      {templates.length===0 && (
+        <div style={{...S.card,textAlign:"center",padding:"36px"}}>
+          <div style={{fontSize:"32px",marginBottom:"10px"}}>📋</div>
+          <div style={{color:"#6b82a8",fontSize:"14px",letterSpacing:"0.1em",marginBottom:"12px"}}>NO TEMPLATES YET</div>
+          <div style={{color:"#6b82a8",fontSize:"12px",marginBottom:"18px",fontFamily:"Georgia,serif",letterSpacing:0}}>
+            Save your routines here to start workouts faster.
+          </div>
+          <button style={S.bigBtn} onClick={startNew}>+ CREATE FIRST TEMPLATE</button>
+        </div>
+      )}
+      {templates.map(t=>(
+        <div key={t.id} style={S.card}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"10px"}}>
+            <div>
+              <div style={{fontSize:"18px"}}>{t.name}</div>
+              <div style={{fontSize:"11px",color:"#6b82a8"}}>
+                {t.exercises.length} exercise{t.exercises.length!==1?"s":""} · {t.exercises.reduce((a,e)=>a+e.sets.length,0)} sets
+              </div>
+            </div>
+            <div style={{display:"flex",gap:"6px"}}>
+              <button style={S.outlineBtn("#c9a84c")} onClick={()=>{setEditing(t);setExpandedEx(null);}}>EDIT</button>
+              <button style={S.outlineBtn("#c9a84c")} onClick={()=>onStartFromTemplate(t)}>▶ USE</button>
+              <button style={S.outlineBtn("#e05555")} onClick={()=>deleteT(t.id)}>✕</button>
+            </div>
+          </div>
+          {t.exercises.map(ex=>(
+            <div key={ex.id} style={{display:"flex",alignItems:"center",gap:"8px",
+                                     padding:"5px 0",borderTop:"1px solid #132038"}}>
+              <span style={S.bpTag(ex.bodyPart)}>{ex.bodyPart}</span>
+              <span style={{fontSize:"13px"}}>{ex.customName||ex.name}</span>
+              <span style={{color:"#6b82a8",fontSize:"10px",marginLeft:"auto"}}>{ex.sets.length} sets</span>
+            </div>
+          ))}
+          <button style={{...S.bigBtn,marginTop:"12px",fontSize:"16px",padding:"12px"}}
+                  onClick={()=>onStartFromTemplate(t)}>▶ START FROM THIS TEMPLATE</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+
+// ── 1RM Formulas ─────────────────────────────────────────────────────────────
+// All major formulas — we show all and highlight the average
+function calc1RM(weight, reps) {
+  if (!weight || !reps || reps < 1) return null;
+  const w = parseFloat(weight), r = parseInt(reps);
+  if (isNaN(w) || isNaN(r) || r < 1) return null;
+  if (r === 1) return { epley:w, brzycki:w, lombardi:w, mayhew:w, avg:w };
+  return {
+    epley:    Math.round(w * (1 + r / 30)),
+    brzycki:  Math.round(w * (36 / (37 - r))),
+    lombardi: Math.round(w * Math.pow(r, 0.10)),
+    mayhew:   Math.round((100 * w) / (52.2 + 41.9 * Math.exp(-0.055 * r))),
+    get avg() { return Math.round((this.epley + this.brzycki + this.lombardi + this.mayhew) / 4); }
+  };
+}
+
+// For a given exercise across all workouts, find the set that produces the highest estimated 1RM
+function getBest1RM(exName, workouts) {
+  let best = null;
+  for (const w of workouts) {
+    for (const ex of w.exercises) {
+      if ((ex.customName || ex.name) !== exName) continue;
+      for (const s of ex.sets) {
+        if (!s.weight || !s.reps) continue;
+        const est = calc1RM(s.weight, s.reps);
+        if (!est) continue;
+        if (!best || est.avg > best.orm.avg) {
+          best = { orm: est, weight: parseFloat(s.weight), reps: parseInt(s.reps), date: w.date, workoutName: w.name };
+        }
+      }
+    }
+  }
+  return best;
+}
+
+function ORMView({ workouts }) {
+  const [manWeight, setManWeight] = useState("");
+  const [manReps,   setManReps]   = useState("");
+  const [selEx,     setSelEx]     = useState("");
+
+  const allNames = [...new Set(workouts.flatMap(w => w.exercises.map(e => e.customName || e.name)))];
+  const manResult = calc1RM(manWeight, manReps);
+  const exBest    = selEx ? getBest1RM(selEx, workouts) : null;
+
+  // Percentage table rows
+  const pctRows = [100,95,90,85,80,75,70,65,60,55,50];
+
+  return (
+    <div style={S.main}>
+      <div style={S.sectionTitle}>1 REP MAX CALCULATOR</div>
+
+      {/* Manual calculator */}
+      <div style={S.card}>
+        <div style={{fontSize:"14px",color:"#c9a84c",letterSpacing:"0.15em",marginBottom:"12px"}}>
+          MANUAL CALCULATOR
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"12px"}}>
+          <div>
+            <span style={S.label}>WEIGHT (LBS)</span>
+            <input style={S.input} type="number" inputMode="decimal"
+                   placeholder="e.g. 225" value={manWeight}
+                   onChange={e=>setManWeight(e.target.value)}/>
+          </div>
+          <div>
+            <span style={S.label}>REPS PERFORMED</span>
+            <input style={S.input} type="number" inputMode="numeric"
+                   placeholder="e.g. 5" value={manReps}
+                   onChange={e=>setManReps(e.target.value)}/>
+          </div>
+        </div>
+        {manResult && (
+          <>
+            <div style={{textAlign:"center",padding:"16px 0 10px",borderTop:"1px solid #1e3560"}}>
+              <div style={{fontSize:"11px",color:"#6b82a8",letterSpacing:"0.15em",marginBottom:"4px"}}>ESTIMATED 1RM</div>
+              <div style={{fontSize:"52px",color:"#c9a84c",lineHeight:1,
+                           textShadow:"0 0 24px rgba(201,168,76,0.4)"}}>
+                {manResult.avg}
+              </div>
+              <div style={{fontSize:"12px",color:"#6b82a8",marginTop:"4px"}}>LBS (AVERAGE OF 4 FORMULAS)</div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:"6px",marginTop:"10px"}}>
+              {[
+                {label:"EPLEY",    val:manResult.epley},
+                {label:"BRZYCKI",  val:manResult.brzycki},
+                {label:"LOMBARDI", val:manResult.lombardi},
+                {label:"MAYHEW",   val:manResult.mayhew},
+              ].map(f=>(
+                <div key={f.label} style={{background:"#0a1628",borderRadius:"8px",padding:"8px",textAlign:"center"}}>
+                  <div style={{fontSize:"9px",color:"#6b82a8",letterSpacing:"0.08em",marginBottom:"3px"}}>{f.label}</div>
+                  <div style={{fontSize:"18px",color:"#f0f4ff"}}>{f.val}</div>
+                </div>
+              ))}
+            </div>
+            {/* Percentage table */}
+            <div style={{marginTop:"14px",borderTop:"1px solid #1e3560",paddingTop:"12px"}}>
+              <div style={{fontSize:"11px",color:"#6b82a8",letterSpacing:"0.12em",marginBottom:"8px"}}>
+                TRAINING PERCENTAGES
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px"}}>
+                {pctRows.map(pct=>(
+                  <div key={pct} style={{display:"flex",justifyContent:"space-between",
+                                         padding:"5px 8px",background:"#0a1628",borderRadius:"6px"}}>
+                    <span style={{color:"#6b82a8",fontSize:"12px"}}>{pct}%</span>
+                    <span style={{color: pct===100?"#c9a84c":"#f0f4ff",
+                                  fontWeight: pct===100?"bold":"normal",fontSize:"12px"}}>
+                      {Math.round(manResult.avg * pct / 100)} lbs
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+        {!manResult && (
+          <div style={{textAlign:"center",color:"#6b82a8",fontSize:"12px",
+                       padding:"16px 0",fontFamily:"Georgia,serif",letterSpacing:0}}>
+            Enter a weight and reps above to estimate your 1RM
+          </div>
+        )}
+      </div>
+
+      {/* From logged workouts */}
+      {allNames.length > 0 && (
+        <div style={S.card}>
+          <div style={{fontSize:"14px",color:"#c9a84c",letterSpacing:"0.15em",marginBottom:"12px"}}>
+            FROM YOUR WORKOUTS
+          </div>
+          <span style={S.label}>SELECT EXERCISE</span>
+          <select style={{...S.select,marginBottom:"12px"}} value={selEx}
+                  onChange={e=>setSelEx(e.target.value)}>
+            <option value="">-- Choose an exercise --</option>
+            {allNames.map(n=><option key={n}>{n}</option>)}
+          </select>
+          {selEx && !exBest && (
+            <div style={{color:"#6b82a8",fontSize:"12px",textAlign:"center",padding:"10px",
+                         fontFamily:"Georgia,serif",letterSpacing:0}}>
+              No sets with weight and reps logged yet for this exercise.
+            </div>
+          )}
+          {exBest && (
+            <>
+              <div style={{textAlign:"center",padding:"14px 0 8px",borderTop:"1px solid #1e3560"}}>
+                <div style={{fontSize:"11px",color:"#6b82a8",letterSpacing:"0.15em",marginBottom:"4px"}}>
+                  ESTIMATED 1RM FOR {selEx.toUpperCase()}
+                </div>
+                <div style={{fontSize:"52px",color:"#c9a84c",lineHeight:1,
+                             textShadow:"0 0 24px rgba(201,168,76,0.4)"}}>
+                  {exBest.orm.avg}
+                </div>
+                <div style={{fontSize:"12px",color:"#6b82a8",marginTop:"4px"}}>LBS</div>
+                <div style={{fontSize:"11px",color:"#6b82a8",marginTop:"6px",
+                             fontFamily:"Georgia,serif",letterSpacing:0}}>
+                  Based on {exBest.weight} lbs × {exBest.reps} reps on {exBest.date}
+                </div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:"6px",marginTop:"10px"}}>
+                {[
+                  {label:"EPLEY",    val:exBest.orm.epley},
+                  {label:"BRZYCKI",  val:exBest.orm.brzycki},
+                  {label:"LOMBARDI", val:exBest.orm.lombardi},
+                  {label:"MAYHEW",   val:exBest.orm.mayhew},
+                ].map(f=>(
+                  <div key={f.label} style={{background:"#0a1628",borderRadius:"8px",padding:"8px",textAlign:"center"}}>
+                    <div style={{fontSize:"9px",color:"#6b82a8",letterSpacing:"0.08em",marginBottom:"3px"}}>{f.label}</div>
+                    <div style={{fontSize:"18px",color:"#f0f4ff"}}>{f.val}</div>
+                  </div>
+                ))}
+              </div>
+              {/* Percentage table for logged exercise */}
+              <div style={{marginTop:"14px",borderTop:"1px solid #1e3560",paddingTop:"12px"}}>
+                <div style={{fontSize:"11px",color:"#6b82a8",letterSpacing:"0.12em",marginBottom:"8px"}}>
+                  TRAINING PERCENTAGES
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px"}}>
+                  {pctRows.map(pct=>(
+                    <div key={pct} style={{display:"flex",justifyContent:"space-between",
+                                           padding:"5px 8px",background:"#0a1628",borderRadius:"6px"}}>
+                      <span style={{color:"#6b82a8",fontSize:"12px"}}>{pct}%</span>
+                      <span style={{color:pct===100?"#c9a84c":"#f0f4ff",fontSize:"12px"}}>
+                        {Math.round(exBest.orm.avg * pct / 100)} lbs
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Info card */}
+      <div style={{...S.card,padding:"12px 16px"}}>
+        <div style={{fontSize:"11px",color:"#6b82a8",letterSpacing:"0.1em",marginBottom:"6px"}}>ABOUT 1RM ESTIMATES</div>
+        <div style={{fontSize:"11px",color:"#6b82a8",fontFamily:"Georgia,serif",letterSpacing:0,lineHeight:1.6}}>
+          Most accurate with 3–10 reps. The average of 4 formulas (Epley, Brzycki, Lombardi, Mayhew) gives a reliable estimate. Use training percentages to plan working sets — e.g. 80% for hypertrophy, 90%+ for strength.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── App ──────────────────────────────────────────────────────────────────────
+function App() {
+  const [workouts,  setWorkouts]  = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const [loaded,    setLoaded]    = useState(false);
+  const [view,      setView]      = useState("home");
+  const [workout,   setWorkout]   = useState(null);
+
+  // Load from IndexedDB
+  useEffect(()=>{
+    (async()=>{
+      try { const d=await dbGet("workouts");  if(d) setWorkouts(d);  } catch{}
+      try { const d=await dbGet("templates"); if(d) setTemplates(d); } catch{}
+      setLoaded(true);
+    })();
+  },[]);
+
+  useEffect(()=>{ if(loaded) dbSet("workouts",  workouts).catch(()=>{}); },[workouts,  loaded]);
+  useEffect(()=>{ if(loaded) dbSet("templates", templates).catch(()=>{}); },[templates, loaded]);
+
+  const startWorkout = () => {
+    const w=newWorkout(); w.name=`Workout ${workouts.length+1}`;
+    setWorkout(w); setView("log");
+  };
+  const startFromTemplate = (t) => {
+    const w=newWorkout();
+    w.name=t.name;
+    w.exercises=t.exercises.map(e=>({...e,id:uid(),sets:e.sets.map(s=>({...s,id:uid(),weight:"",reps:"",comment:""}))}));
+    setWorkout(w); setView("log");
+  };
+  const saveWorkout = () => {
+    setWorkouts(p=>p.find(x=>x.id===workout.id)?p.map(x=>x.id===workout.id?workout:x):[workout,...p]);
+    setView("home"); setWorkout(null);
+  };
+  const deleteWorkout = id => setWorkouts(p=>p.filter(w=>w.id!==id));
+
+  const onNav = (tab) => {
+    if (tab==="log") { startWorkout(); return; }
+    if (view==="log" && workout && tab!=="log") { /* just switch view, keep workout */ }
+    setView(tab);
+  };
+
+  if (!loaded) return (
+    <div style={{minHeight:"100vh",background:"#0a1628",display:"flex",flexDirection:"column",
+                 alignItems:"center",justifyContent:"center",
+                 fontFamily:"'Bebas Neue',Impact,sans-serif"}}>
+      <BarbellSVG size={52}/>
+      <div style={{color:"#c9a84c",fontSize:"26px",letterSpacing:"0.2em",marginTop:"18px"}}>IRON LOG</div>
+      <div style={{color:"#6b82a8",fontSize:"12px",letterSpacing:"0.2em",marginTop:"8px"}}>LOADING…</div>
+    </div>
+  );
+
+  const activeView = view==="log" && !workout ? "home" : view;
+
+  return (
+    <div style={S.app}>
+      {activeView!=="log" && <Header/>}
+      <BottomNav view={activeView} onNav={onNav}/>
+      {activeView==="home"      && <HomeView workouts={workouts} templates={templates} onStart={startWorkout} onStartFromTemplate={startFromTemplate}/>}
+      {activeView==="log"       && workout && <LogView workout={workout} setWorkout={setWorkout} workouts={workouts} onSave={saveWorkout} onCancel={()=>{setWorkout(null);setView("home");}}/>}
+      {activeView==="history"   && <HistoryView workouts={workouts} onDelete={deleteWorkout}/>}
+      {activeView==="progress"  && <ProgressView workouts={workouts}/>}
+      {activeView==="orm"       && <ORMView workouts={workouts}/>}
+      {activeView==="templates" && <TemplatesView templates={templates} setTemplates={setTemplates} onStartFromTemplate={startFromTemplate}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+  </script>
+</body>
+</html>
