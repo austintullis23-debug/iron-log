@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Iron Log">
+<title>Iron Log</title>
+</head>
+<body style="margin:0;padding:0;background:#0a1628">
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script type="text/babel">
+const{useState,useEffect}=React;
+const BP=["Chest","Back","Shoulders","Biceps","Triceps","Legs","Core","Full Body"];
+const EX={Chest:["Bench Press","Incline Bench Press","Decline Bench Press","Dumbbell Fly","Push Up","Cable Fly","Dips"],Back:["Deadlift","Pull Up","Barbell Row","Lat Pulldown","Seated Cable Row","T-Bar Row","Face Pull"],Shoulders:["Overhead Press","Lateral Raise","Front Raise","Arnold Press","Rear Delt Fly","Shrugs"],Biceps:["Barbell Curl","Dumbbell Curl","Hammer Curl","Preacher Curl","Cable Curl","Concentration Curl"],Triceps:["Tricep Pushdown","Skull Crusher","Close Grip Bench","Overhead Extension","Dips","Kickback"],Legs:["Squat","Romanian Deadlift","Leg Press","Lunges","Leg Curl","Leg Extension","Calf Raise","Hip Thrust"],Core:["Plank","Crunches","Russian Twist","Leg Raise","Ab Wheel","Cable Crunch","Dead Bug"],"Full Body":["Clean and Jerk","Snatch","Thruster","Burpee","Kettlebell Swing","Man Maker"]};
+const BPC={Chest:"#e8826a",Back:"#4dabf7",Shoulders:"#cc5de8",Biceps:"#f06595",Triceps:"#f783ac",Legs:"#ffd43b",Core:"#63e6be","Full Body":"#74c0fc"};
+const uid=()=>Date.now()+Math.random();
+const nW=(n)=>({id:uid(),date:new Date().toISOString().split("T")[0],name:n||"",exercises:[],bodyWeight:""});
+const nEx=(bp="Chest")=>({id:uid(),bodyPart:bp,name:EX[bp][0],customName:"",sets:[]});
+const nS=()=>({id:uid(),weight:"",reps:"",comment:""});
+const nT=()=>({id:uid(),name:"New Template",exercises:[]});
+const nTE=(bp="Chest")=>({id:uid(),bodyPart:bp,name:EX[bp][0],customName:"",sets:[]});
+const nTS=()=>({id:uid(),weight:"",reps:""});
+
+function getPR(exercise,setIndex,allWorkouts,currentId){
+  const s=exercise.sets[setIndex];
+  if(!s.weight||!s.reps)return null;
+  const vol=parseFloat(s.weight)*parseInt(s.reps);
+  let max=0;
+  for(const w of allWorkouts){
+    if(w.id===currentId)continue;
+    for(const ex of w.exercises){
+      if(ex.name===exercise.name){
+        for(const t of ex.sets){if(t.weight&&t.reps)max=Math.max(max,parseFloat(t.weight)*parseInt(t.reps));}
+      }
+    }
+  }
+  if(max===0)return null;
+  if(vol>max)return"PR";
+  if((vol-max)/max>=-0.05)return"~";
+  return null;
+}
+
+function getLastPerf(exName,allWorkouts,currentId){
+  let best=null;
+  for(const w of allWorkouts){
+    if(w.id===currentId)continue;
+    for(const ex of w.exercises){
+      if((ex.customName||ex.name)===exName){
+        if(!best||w.date>best.date)best={date:w.date,sets:ex.sets,bodyWeight:w.bodyWeight};
+      }
+    }
+  }
+  return best;
+}
+
+function getProgData(name,allWorkouts){
+  const pts=[];
+  for(const w of [...allWorkouts].sort((a,b)=>a.date<b.date?-1:1)){
+    for(const ex of w.exercises){
+      if((ex.customName||ex.name)===name){
+        let mv=0,mw=0;
+        for(const s of ex.sets){if(s.weight&&s.reps){const v=parseFloat(s.weight)*parseInt(s.reps);if(v>mv)mv=v;if(parseFloat(s.weight)>mw)mw=parseFloat(s.weight);}}
+        if(mv>0)pts.push({date:w.date,volume:mv,weight:mw,workoutName:w.name});
+      }
+    }
+  }
+  return pts;
+}
+
+function MiniChart({data}){
+  if(data.length<2)return null;
+  const W=200,H=60,p=8;
+  const vols=data.map(d=>d.volume);
+  const mn=Math.min(...vols),mx=Math.max(...vols),rng=mx-mn||1;
+  const pts=data.map((d,i)=>`${p+(i/(data.length-1))*(W-p*2)},${H-p-((d.volume-mn)/rng)*(H-p*2)}`);
+  const up=vols[vols.length-1]>=vols[0],col=up?"#c9a84c":"#e05555";
+  return(<svg width={W} height={H} style={{overflow:"visible"}}><polyline points={pts.join(" ")} fill="none" stroke={col} strokeWidth="2" strokeLinejoin="round"/>{data.map((_,i)=>{const[x,y]=pts[i].split(",").map(Number);return<circle key={i} cx={x} cy={y} r="3" fill={col}/>;})}</svg>);
+}
+
+function LastPerf({exName,allWorkouts,currentId}){
+  const p=getLastPerf(exName,allWorkouts,currentId);
+  if(!p)return null;
+  return(
+    <div style={{marginTop:"14px",padding:"12px",background:"#071020",border:"1px solid #c9a84c",borderRadius:"6px"}}>
+      <div style={{fontSize:"11px",color:"#c9a84c",letterSpacing:"0.14em",marginBottom:"8px"}}>LAST SESSION — {p.date}{p.bodyWeight?` · BW: ${p.bodyWeight} lbs`:""}</div>
+      {p.sets.map((s,i)=>(
+        <div key={i} style={{display:"flex",gap:"12px",fontSize:"13px",color:"#c8d4e8",padding:"3px 0"}}>
+          <span style={{color:"#4a6080",minWidth:"42px"}}>SET {i+1}</span>
+          <span>{s.weight||"—"} lbs</span><span style={{color:"#4a6080"}}>×</span><span>{s.reps||"—"} reps</span>
+          {s.comment&&<span style={{color:"#4a6080",fontStyle:"italic",fontFamily:"Georgia,serif",fontSize:"12px"}}>"{s.comment}"</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function App(){
+  const[workouts,setWorkouts]=useState(()=>{try{return JSON.parse(localStorage.getItem("il_workouts")||"[]")}catch{return[]}});
+  const[templates,setTemplates]=useState(()=>{try{return JSON.parse(localStorage.getItem("il_templates")||"[]")}catch{return[]}});
+  const[view,setView]=useState("home");
+  const[workout,setWorkout]=useState(null);
+  const[openEx,setOpenEx]=useState(null);
+  const[progEx,setProgEx]=useState("");
+  const[editTpl,setEditTpl]=useState(null);
+  const[openTE,setOpenTE]=useState(null);
+
+  useEffect(()=>{try{localStorage.setItem("il_workouts",JSON.stringify(workouts))}catch{}},[workouts]);
+  useEffect(()=>{try{localStorage.setItem("il_templates",JSON.stringify(templates))}catch{}},[templates]);
+
+  function startBlank(){const w=nW(`Workout ${workouts.length+1}`);setWorkout(w);setOpenEx(null);setView("log");}
+  function startFromTpl(t){
+    const w=nW(t.name);
+    w.exercises=t.exercises.map(te=>({...nEx(te.bodyPart),name:te.name,customName:te.customName,sets:te.sets.map(()=>nS())}));
+    setWorkout(w);setOpenEx(w.exercises.length?w.exercises[0].id:null);setView("log");
+  }
+  function saveWorkout(){
+    if(!workout)return;
+    setWorkouts(prev=>{const i=prev.findIndex(w=>w.id===workout.id);return i>=0?prev.map((w,j)=>j===i?workout:w):[workout,...prev];});
+    setView("home");setWorkout(null);
+  }
+  function delWorkout(id){setWorkouts(p=>p.filter(w=>w.id!==id));}
+  function addEx(){const ex=nEx();setWorkout(p=>({...p,exercises:[...p.exercises,ex]}));setOpenEx(ex.id);}
+  function updEx(id,f,v){setWorkout(p=>({...p,exercises:p.exercises.map(ex=>ex.id===id?(f==="bodyPart"?{...ex,bodyPart:v,name:EX[v][0]}:{...ex,[f]:v}):ex)}));}
+  function remEx(id){setWorkout(p=>({...p,exercises:p.exercises.filter(ex=>ex.id!==id)}));}
+  function addSet(exId){setWorkout(p=>({...p,exercises:p.exercises.map(ex=>ex.id===exId?{...ex,sets:[...ex.sets,nS()]}:ex)}));}
+  function updSet(exId,sId,f,v){setWorkout(p=>({...p,exercises:p.exercises.map(ex=>ex.id===exId?{...ex,sets:ex.sets.map(s=>s.id===sId?{...s,[f]:v}:s)}:ex)}));}
+  function remSet(exId,sId){setWorkout(p=>({...p,exercises:p.exercises.map(ex=>ex.id===exId?{...ex,sets:ex.sets.filter(s=>s.id!==sId)}:ex)}));}
+
+  function saveTpl(){
+    if(!editTpl)return;
+    setTemplates(p=>{const i=p.findIndex(t=>t.id===editTpl.id);return i>=0?p.map((t,j)=>j===i?editTpl:t):[editTpl,...p];});
+    setView("templates");setEditTpl(null);
+  }
+  function delTpl(id){setTemplates(p=>p.filter(t=>t.id!==id));}
+  function addTE(){const ex=nTE();setEditTpl(p=>({...p,exercises:[...p.exercises,ex]}));setOpenTE(ex.id);}
+  function updTE(id,f,v){setEditTpl(p=>({...p,exercises:p.exercises.map(ex=>ex.id===id?(f==="bodyPart"?{...ex,bodyPart:v,name:EX[v][0]}:{...ex,[f]:v}):ex)}));}
+  function remTE(id){setEditTpl(p=>({...p,exercises:p.exercises.filter(ex=>ex.id!==id)}));}
+  function addTS(exId){setEditTpl(p=>({...p,exercises:p.exercises.map(ex=>ex.id===exId?{...ex,sets:[...ex.sets,nTS()]}:ex)}));}
+  function updTS(exId,sId,f,v){setEditTpl(p=>({...p,exercises:p.exercises.map(ex=>ex.id===exId?{...ex,sets:ex.sets.map(s=>s.id===sId?{...s,[f]:v}:s)}:ex)}));}
+  function remTS(exId,sId){setEditTpl(p=>({...p,exercises:p.exercises.map(ex=>ex.id===exId?{...ex,sets:ex.sets.filter(s=>s.id!==sId)}:ex)}));}
+  function newEditTpl(){const t=nT();setTemplates(p=>[t,...p]);setEditTpl(t);setOpenTE(null);setView("editTpl");}
+
+  const allNames=[...new Set(workouts.flatMap(w=>w.exercises.map(ex=>ex.customName||ex.name)))];
+  const pd=progEx?getProgData(progEx,workouts):[];
+
+  const GOLD="#c9a84c",NAVY="#0a1628",NAVYMID="#0d1f3c",NAVYLT="#1e3560",TEXT="#f0f4ff",MUTED="#6b82a8";
+  const CSS=`@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap');
+  *{box-sizing:border-box}body{margin:0}button:hover{opacity:0.82}
+  input:focus,select:focus{border-color:${GOLD}!important;outline:none}
+  ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:${GOLD}}
+  input[type=number]::-webkit-inner-spin-button{opacity:1}option{background:#0d1f3c}`;
+  const card={background:NAVYMID,border:`1px solid ${NAVYLT}`,borderRadius:"6px",padding:"18px",marginBottom:"14px"};
+  const inp={background:"#071020",border:`1px solid ${NAVYLT}`,color:TEXT,padding:"8px 11px",fontFamily:"inherit",fontSize:"16px",width:"100%",boxSizing:"border-box",outline:"none"};
+  const sel={...inp,cursor:"pointer"};
+  const lbl={fontSize:"11px",color:MUTED,marginBottom:"4px",letterSpacing:"0.08em",display:"block"};
+  const bigBtn={background:`linear-gradient(135deg,${GOLD},#a07828)`,color:NAVY,border:"none",padding:"15px 32px",fontSize:"19px",fontFamily:"inherit",letterSpacing:"0.15em",cursor:"pointer",display:"block",width:"100%",marginBottom:"10px"};
+  const outBtn=(c)=>({background:"transparent",border:`1px solid ${c||GOLD}`,color:c||GOLD,padding:"5px 12px",cursor:"pointer",fontFamily:"inherit",fontSize:"12px",letterSpacing:"0.08em"});
+  const hdr={background:"#071020",borderBottom:`2px solid ${GOLD}`,padding:"14px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100};
+  const logo={fontSize:"26px",color:GOLD,letterSpacing:"0.18em",fontFamily:"'Bebas Neue',Impact,sans-serif"};
+  const app={minHeight:"100vh",background:NAVY,color:TEXT,fontFamily:"'Bebas Neue',Impact,sans-serif",letterSpacing:"0.03em"};
+  const sec={fontSize:"20px",color:GOLD,letterSpacing:"0.2em",marginBottom:"14px"};
+  const nb=(on)=>({background:on?GOLD:"transparent",color:on?NAVY:GOLD,border:`1px solid ${GOLD}`,padding:"5px 12px",cursor:"pointer",fontSize:"12px",fontFamily:"inherit",letterSpacing:"0.1em"});
+  const bpt=(bp)=>({background:BPC[bp]||"#555",color:"#0a0a0f",fontSize:"10px",padding:"2px 6px",letterSpacing:"0.08em",display:"inline-block",borderRadius:"2px"});
+  const main={padding:"20px",maxWidth:"800px",margin:"0 auto"};
+
+  const Nav=()=>(
+    <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
+      {[["home","HOME"],["history","HISTORY"],["progress","PROGRESS"],["templates","TEMPLATES"]].map(([v,l])=>(
+        <button key={v} style={nb(view===v)} onClick={()=>setView(v)}>{l}</button>
+      ))}
+    </div>
+  );
+
+  // ── HOME ──────────────────────────────────────────────────
+  if(view==="home")return(
+    <div style={app}><style>{CSS}</style>
+    <div style={hdr}><div style={logo}>⚡ IRON LOG</div><Nav/></div>
+    <div style={main}>
+      <div style={{textAlign:"center",padding:"32px 0 24px"}}>
+        <div style={{fontSize:"44px",color:GOLD,marginBottom:"6px",...{textShadow:`0 0 24px ${GOLD}44`}}}>IRON LOG</div>
+        <div style={{color:MUTED,fontSize:"13px",letterSpacing:"0.2em",marginBottom:"32px"}}>TRACK · PROGRESS · DOMINATE</div>
+        <button style={bigBtn} onClick={startBlank}>+ START BLANK WORKOUT</button>
+        {templates.length>0&&(<>
+          <div style={{color:MUTED,fontSize:"11px",letterSpacing:"0.14em",margin:"6px 0 8px"}}>OR FROM A TEMPLATE</div>
+          {templates.map(t=>(
+            <button key={t.id} style={{...bigBtn,background:"transparent",border:`1px solid ${GOLD}`,color:GOLD,fontSize:"16px",padding:"12px"}} onClick={()=>startFromTpl(t)}>▶ {t.name}</button>
+          ))}
+        </>)}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"12px"}}>
+        {[{l:"WORKOUTS",v:workouts.length},{l:"EXERCISES",v:workouts.reduce((a,w)=>a+w.exercises.length,0)},{l:"TOTAL SETS",v:workouts.reduce((a,w)=>a+w.exercises.reduce((b,ex)=>b+ex.sets.length,0),0)}].map(s=>(
+          <div key={s.l} style={{...card,textAlign:"center"}}><div style={{fontSize:"34px",color:GOLD}}>{s.v}</div><div style={{fontSize:"10px",color:MUTED,letterSpacing:"0.12em"}}>{s.l}</div></div>
+        ))}
+      </div>
+      {workouts.length>0&&(
+        <div style={card}>
+          <div style={sec}>RECENT</div>
+          {workouts.slice(0,3).map(w=>(
+            <div key={w.id} style={{borderBottom:`1px solid ${NAVYLT}`,padding:"9px 0",display:"flex",justifyContent:"space-between"}}>
+              <div><div style={{fontSize:"16px"}}>{w.name}</div><div style={{fontSize:"11px",color:MUTED}}>{w.date}{w.bodyWeight?` · BW: ${w.bodyWeight} lbs`:""} · {w.exercises.length} ex</div></div>
+              <div style={{color:GOLD,fontSize:"20px",alignSelf:"center"}}>→</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div></div>
+  );
+
+  // ── LOG ───────────────────────────────────────────────────
+  if(view==="log"&&workout)return(
+    <div style={app}><style>{CSS}</style>
+    <div style={hdr}>
+      <div style={logo}>⚡ IRON LOG</div>
+      <div style={{display:"flex",gap:"6px"}}>
+        <button style={nb(false)} onClick={()=>{setView("home");setWorkout(null);}}>CANCEL</button>
+        <button style={nb(true)} onClick={saveWorkout}>SAVE ✓</button>
+      </div>
+    </div>
+    <div style={main}>
+      <div style={card}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"12px"}}>
+          <div><span style={lbl}>WORKOUT NAME</span><input style={inp} value={workout.name} onChange={e=>setWorkout(p=>({...p,name:e.target.value}))}/></div>
+          <div><span style={lbl}>DATE</span><input type="date" style={inp} value={workout.date} onChange={e=>setWorkout(p=>({...p,date:e.target.value}))}/></div>
+        </div>
+        <span style={lbl}>BODYWEIGHT (LBS) — optional</span>
+        <input type="number" inputMode="decimal" style={{...inp,width:"180px"}} placeholder="e.g. 185" value={workout.bodyWeight} onChange={e=>setWorkout(p=>({...p,bodyWeight:e.target.value}))}/>
+      </div>
+
+      {workout.exercises.map(ex=>{
+        const name=ex.customName||ex.name;
+        return(
+        <div key={ex.id} style={card}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",padding:"3px 0"}} onClick={()=>setOpenEx(openEx===ex.id?null:ex.id)}>
+            <div style={{display:"flex",alignItems:"center",gap:"9px"}}>
+              <span style={bpt(ex.bodyPart)}>{ex.bodyPart}</span>
+              <span style={{fontSize:"17px"}}>{name}</span>
+            </div>
+            <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+              <span style={{color:MUTED,fontSize:"12px"}}>{ex.sets.length} SETS</span>
+              <button style={outBtn("#e05555")} onClick={e=>{e.stopPropagation();remEx(ex.id);}}>✕</button>
+            </div>
+          </div>
+          {openEx===ex.id&&(
+            <div style={{marginTop:"14px"}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"10px"}}>
+                <div><span style={lbl}>BODY PART</span><select style={sel} value={ex.bodyPart} onChange={e=>updEx(ex.id,"bodyPart",e.target.value)}>{BP.map(b=><option key={b}>{b}</option>)}</select></div>
+                <div><span style={lbl}>EXERCISE</span><select style={sel} value={ex.name} onChange={e=>updEx(ex.id,"name",e.target.value)}>{EX[ex.bodyPart].map(n=><option key={n}>{n}</option>)}</select></div>
+              </div>
+              <div style={{marginBottom:"12px"}}><span style={lbl}>CUSTOM NAME (OPTIONAL)</span><input style={inp} placeholder="Override name..." value={ex.customName} onChange={e=>updEx(ex.id,"customName",e.target.value)}/></div>
+              <div style={{display:"grid",gridTemplateColumns:"30px 75px 75px 1fr auto",gap:"7px",marginBottom:"5px"}}>
+                {["SET","LBS","REPS","NOTES",""].map((h,i)=><div key={i} style={{fontSize:"10px",color:MUTED,letterSpacing:"0.1em"}}>{h}</div>)}
+              </div>
+              {ex.sets.map((s,si)=>{
+                const badge=getPR(ex,si,workouts,workout.id);
+                return(
+                  <div key={s.id} style={{display:"grid",gridTemplateColumns:"30px 75px 75px 1fr auto",gap:"7px",alignItems:"center",marginBottom:"8px"}}>
+                    <div style={{textAlign:"center",fontSize:"12px",color:MUTED}}>{badge?<span style={{background:badge==="PR"?GOLD:"#fff",color:NAVY,fontSize:"9px",padding:"1px 4px",borderRadius:"2px",fontWeight:"bold"}}>{badge}</span>:si+1}</div>
+                    <input style={inp} type="number" inputMode="decimal" placeholder="0" value={s.weight} onChange={e=>updSet(ex.id,s.id,"weight",e.target.value)}/>
+                    <input style={inp} type="number" inputMode="numeric" placeholder="0" value={s.reps} onChange={e=>updSet(ex.id,s.id,"reps",e.target.value)}/>
+                    <input style={inp} placeholder="notes..." value={s.comment} onChange={e=>updSet(ex.id,s.id,"comment",e.target.value)}/>
+                    <button style={outBtn("#e05555")} onClick={()=>remSet(ex.id,s.id)}>✕</button>
+                  </div>
+                );
+              })}
+              <button style={{...outBtn(GOLD),marginTop:"6px"}} onClick={()=>addSet(ex.id)}>+ ADD SET</button>
+              <LastPerf exName={name} allWorkouts={workouts} currentId={workout.id}/>
+            </div>
+          )}
+        </div>
+      );})}
+
+      <button style={{...bigBtn,background:"transparent",border:`2px solid ${GOLD}`,color:GOLD}} onClick={addEx}>+ ADD EXERCISE</button>
+      <button style={bigBtn} onClick={saveWorkout}>SAVE WORKOUT</button>
+    </div></div>
+  );
+
+  // ── HISTORY ───────────────────────────────────────────────
+  if(view==="history")return(
+    <div style={app}><style>{CSS}</style>
+    <div style={hdr}><div style={logo}>⚡ IRON LOG</div><Nav/></div>
+    <div style={main}>
+      <div style={sec}>WORKOUT HISTORY</div>
+      {workouts.length===0&&<div style={{color:MUTED,textAlign:"center",padding:"40px"}}>No workouts yet.</div>}
+      {workouts.map(w=>(
+        <div key={w.id} style={card}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:"12px"}}>
+            <div><div style={{fontSize:"19px"}}>{w.name}</div><div style={{fontSize:"11px",color:MUTED}}>{w.date}{w.bodyWeight?` · BW: ${w.bodyWeight} lbs`:""}</div></div>
+            <button style={outBtn("#e05555")} onClick={()=>delWorkout(w.id)}>DELETE</button>
+          </div>
+          {w.exercises.map(ex=>(
+            <div key={ex.id} style={{borderTop:`1px solid ${NAVYLT}`,paddingTop:"9px",marginTop:"7px"}}>
+              <div style={{display:"flex",gap:"8px",alignItems:"center",marginBottom:"7px"}}>
+                <span style={bpt(ex.bodyPart)}>{ex.bodyPart}</span>
+                <span style={{fontSize:"15px"}}>{ex.customName||ex.name}</span>
+              </div>
+              {ex.sets.map((s,i)=>(
+                <div key={s.id} style={{display:"flex",gap:"14px",fontSize:"13px",color:"#aaaacc",marginBottom:"3px",paddingLeft:"8px"}}>
+                  <span style={{color:MUTED,minWidth:"38px"}}>SET {i+1}</span>
+                  <span>{s.weight} lbs</span><span style={{color:MUTED}}>×</span><span>{s.reps} reps</span>
+                  {s.comment&&<span style={{color:"#4a6080",fontStyle:"italic",fontFamily:"Georgia,serif",fontSize:"12px"}}>"{s.comment}"</span>}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div></div>
+  );
+
+  // ── PROGRESS ──────────────────────────────────────────────
+  if(view==="progress")return(
+    <div style={app}><style>{CSS}</style>
+    <div style={hdr}><div style={logo}>⚡ IRON LOG</div><Nav/></div>
+    <div style={main}>
+      <div style={sec}>PROGRESS TRACKER</div>
+      <div style={card}><span style={lbl}>SELECT EXERCISE</span>
+        <select style={sel} value={progEx} onChange={e=>setProgEx(e.target.value)}>
+          <option value="">-- Choose an exercise --</option>
+          {allNames.map(n=><option key={n}>{n}</option>)}
+        </select>
+      </div>
+      {progEx&&pd.length===0&&<div style={{color:MUTED,textAlign:"center",padding:"20px"}}>No data yet.</div>}
+      {pd.length>0&&(<>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px"}}>
+          <div style={{...card,textAlign:"center"}}><span style={lbl}>BEST WEIGHT</span><div style={{fontSize:"34px",color:GOLD}}>{Math.max(...pd.map(d=>d.weight))} <span style={{fontSize:"13px"}}>LBS</span></div></div>
+          <div style={{...card,textAlign:"center"}}><span style={lbl}>BEST VOLUME</span><div style={{fontSize:"34px",color:GOLD}}>{Math.max(...pd.map(d=>d.volume))} <span style={{fontSize:"13px"}}>LBS</span></div></div>
+        </div>
+        <div style={card}>
+          <span style={lbl}>VOLUME OVER TIME</span><MiniChart data={pd}/>
+          <div style={{marginTop:"14px"}}>
+            {pd.map((d,i)=>{const prev=pd[i-1];const chg=prev?((d.volume-prev.volume)/prev.volume*100).toFixed(1):null;const up=chg>0;return(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:`1px solid ${NAVYLT}`,fontSize:"13px"}}>
+                <span style={{color:MUTED}}>{d.date}</span><span>{d.workoutName}</span>
+                <span style={{color:"#aaaacc"}}>{d.weight} lbs</span><span style={{color:"#aaaacc"}}>vol {d.volume}</span>
+                {chg!==null&&<span style={{color:up?GOLD:"#e05555"}}>{up?"▲":"▼"} {Math.abs(chg)}%</span>}
+              </div>
+            );})}
+          </div>
+        </div>
+        <div style={card}><span style={lbl}>TREND</span>
+          {(()=>{const f=pd[0].volume,l=pd[pd.length-1].volume,pct=((l-f)/f*100).toFixed(1),up=pct>0;return(
+            <div style={{display:"flex",alignItems:"center",gap:"14px"}}>
+              <div style={{fontSize:"44px"}}>{up?"📈":"📉"}</div>
+              <div><div style={{fontSize:"22px",color:up?GOLD:"#e05555"}}>{up?"+":""}{pct}% VOLUME CHANGE</div>
+              <div style={{fontSize:"12px",color:MUTED}}>{up?"Getting stronger — keep pushing!":"Focus on progressive overload."}</div></div>
+            </div>
+          );})()}
+        </div>
+      </>)}
+      {workouts.length>0&&(
+        <div style={card}><div style={sec}>BY BODY PART</div>
+          {BP.map(bp=>{
+            const exes=[...new Set(workouts.flatMap(w=>w.exercises.filter(ex=>ex.bodyPart===bp).map(ex=>ex.customName||ex.name)))];
+            if(!exes.length)return null;
+            return(<div key={bp} style={{marginBottom:"14px"}}>
+              <span style={bpt(bp)}>{bp}</span>
+              <div style={{paddingLeft:"8px",marginTop:"6px"}}>
+                {exes.map(name=>{const data=getProgData(name,workouts);const trend=data.length>1?data[data.length-1].volume>data[0].volume:null;return(
+                  <div key={name} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:`1px solid ${NAVYLT}`,cursor:"pointer"}} onClick={()=>setProgEx(name)}>
+                    <span style={{fontSize:"14px"}}>{name}</span>
+                    <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+                      {data.length>1&&<MiniChart data={data}/>}
+                      {trend!==null&&<span style={{color:trend?GOLD:"#e05555",fontSize:"15px"}}>{trend?"▲":"▼"}</span>}
+                      <span style={{color:MUTED,fontSize:"11px"}}>{data.length} sessions</span>
+                    </div>
+                  </div>
+                );})}
+              </div>
+            </div>);
+          })}
+        </div>
+      )}
+    </div></div>
+  );
+
+  // ── TEMPLATES LIST ────────────────────────────────────────
+  if(view==="templates")return(
+    <div style={app}><style>{CSS}</style>
+    <div style={hdr}>
+      <div style={logo}>⚡ IRON LOG</div>
+      <div style={{display:"flex",gap:"6px",flexWrap:"wrap",alignItems:"center"}}>
+        <Nav/>
+        <button style={{...nb(false),background:GOLD,color:NAVY}} onClick={newEditTpl}>+ NEW</button>
+      </div>
+    </div>
+    <div style={main}>
+      <div style={sec}>WORKOUT TEMPLATES</div>
+      {templates.length===0&&(
+        <div style={{...card,textAlign:"center",padding:"40px"}}>
+          <div style={{color:MUTED,fontSize:"13px",marginBottom:"16px"}}>No templates yet. Build one to speed up logging.</div>
+          <button style={bigBtn} onClick={newEditTpl}>+ CREATE FIRST TEMPLATE</button>
+        </div>
+      )}
+      {templates.map(t=>(
+        <div key={t.id} style={card}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"10px"}}>
+            <div><div style={{fontSize:"19px"}}>{t.name}</div><div style={{fontSize:"11px",color:MUTED}}>{t.exercises.length} exercises · {t.exercises.reduce((a,e)=>a+e.sets.length,0)} sets</div></div>
+            <div style={{display:"flex",gap:"6px"}}>
+              <button style={outBtn()} onClick={()=>{setEditTpl(JSON.parse(JSON.stringify(t)));setOpenTE(null);setView("editTpl");}}>EDIT</button>
+              <button style={outBtn("#e05555")} onClick={()=>delTpl(t.id)}>✕</button>
+            </div>
+          </div>
+          {t.exercises.map(ex=>(
+            <div key={ex.id} style={{display:"flex",gap:"8px",alignItems:"center",padding:"5px 0",borderTop:`1px solid ${NAVYLT}`}}>
+              <span style={bpt(ex.bodyPart)}>{ex.bodyPart}</span>
+              <span style={{fontSize:"14px"}}>{ex.customName||ex.name}</span>
+              <span style={{color:MUTED,fontSize:"11px",marginLeft:"auto"}}>{ex.sets.length} sets</span>
+            </div>
+          ))}
+          <button style={{...bigBtn,marginTop:"12px",fontSize:"16px",padding:"12px"}} onClick={()=>startFromTpl(t)}>▶ START FROM THIS TEMPLATE</button>
+        </div>
+      ))}
+    </div></div>
+  );
+
+  // ── EDIT TEMPLATE ─────────────────────────────────────────
+  if(view==="editTpl"&&editTpl)return(
+    <div style={app}><style>{CSS}</style>
+    <div style={hdr}>
+      <div style={logo}>⚡ IRON LOG</div>
+      <div style={{display:"flex",gap:"6px"}}>
+        <button style={nb(false)} onClick={()=>{setView("templates");setEditTpl(null);}}>CANCEL</button>
+        <button style={nb(true)} onClick={saveTpl}>SAVE ✓</button>
+      </div>
+    </div>
+    <div style={main}>
+      <div style={card}><span style={lbl}>TEMPLATE NAME</span><input style={inp} value={editTpl.name} onChange={e=>setEditTpl(p=>({...p,name:e.target.value}))}/></div>
+      {editTpl.exercises.map(ex=>(
+        <div key={ex.id} style={card}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer",padding:"3px 0"}} onClick={()=>setOpenTE(openTE===ex.id?null:ex.id)}>
+            <div style={{display:"flex",alignItems:"center",gap:"9px"}}>
+              <span style={bpt(ex.bodyPart)}>{ex.bodyPart}</span>
+              <span style={{fontSize:"17px"}}>{ex.customName||ex.name}</span>
+            </div>
+            <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+              <span style={{color:MUTED,fontSize:"12px"}}>{ex.sets.length} SETS</span>
+              <button style={outBtn("#e05555")} onClick={e=>{e.stopPropagation();remTE(ex.id);}}>✕</button>
+            </div>
+          </div>
+          {openTE===ex.id&&(
+            <div style={{marginTop:"14px"}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"10px"}}>
+                <div><span style={lbl}>BODY PART</span><select style={sel} value={ex.bodyPart} onChange={e=>updTE(ex.id,"bodyPart",e.target.value)}>{BP.map(b=><option key={b}>{b}</option>)}</select></div>
+                <div><span style={lbl}>EXERCISE</span><select style={sel} value={ex.name} onChange={e=>updTE(ex.id,"name",e.target.value)}>{EX[ex.bodyPart].map(n=><option key={n}>{n}</option>)}</select></div>
+              </div>
+              <div style={{marginBottom:"12px"}}><span style={lbl}>CUSTOM NAME (OPTIONAL)</span><input style={inp} placeholder="Override name..." value={ex.customName} onChange={e=>updTE(ex.id,"customName",e.target.value)}/></div>
+              <div style={{fontSize:"11px",color:MUTED,marginBottom:"8px",letterSpacing:"0.08em"}}>TARGET SETS — set target weights/reps as a reminder (you log actuals when working out)</div>
+              {ex.sets.map((s,si)=>(
+                <div key={s.id} style={{display:"grid",gridTemplateColumns:"30px 80px 80px auto",gap:"7px",alignItems:"center",marginBottom:"8px"}}>
+                  <div style={{textAlign:"center",fontSize:"12px",color:MUTED}}>{si+1}</div>
+                  <input style={inp} type="number" inputMode="decimal" placeholder="lbs" value={s.weight} onChange={e=>updTS(ex.id,s.id,"weight",e.target.value)}/>
+                  <input style={inp} type="number" inputMode="numeric" placeholder="reps" value={s.reps} onChange={e=>updTS(ex.id,s.id,"reps",e.target.value)}/>
+                  <button style={outBtn("#e05555")} onClick={()=>remTS(ex.id,s.id)}>✕</button>
+                </div>
+              ))}
+              <button style={{...outBtn(GOLD),marginTop:"6px"}} onClick={()=>addTS(ex.id)}>+ ADD SET</button>
+              <LastPerf exName={ex.customName||ex.name} allWorkouts={workouts} currentId={null}/>
+            </div>
+          )}
+        </div>
+      ))}
+      <button style={{...bigBtn,background:"transparent",border:`2px solid ${GOLD}`,color:GOLD}} onClick={addTE}>+ ADD EXERCISE</button>
+      <button style={bigBtn} onClick={saveTpl}>SAVE TEMPLATE</button>
+    </div></div>
+  );
+
+  return null;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
